@@ -1,0 +1,16 @@
+[package]
+name = "signaling"
+description = "A simple signaling server to connect webrtc peers"
+version = "0.1.0"
+edition = "2018"
+
+[dependencies]
+anyhow = "1"
+async-std = { version = "1.10", features = [ "attributes" ] }
+async-tungstenite = "0.15"
+futures = "0.3"
+simple_logger = "*"
+log = "*"
+uuid = { version = "0.8", features = ["serde", "v4"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "*"
