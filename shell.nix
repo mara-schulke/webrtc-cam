@@ -1,0 +1,21 @@
+with import <nixpkgs> {};
+
+stdenv.mkDerivation {
+  name = "thb-computergrafik";
+
+  buildInputs = with pkgs; [
+    openssl
+    libnice
+    glib
+    pkgconfig
+    gcc
+    gst_all_1.gstreamer
+    gst_all_1.gst-rtsp-server
+    gst_all_1.gst-plugins-base
+    gst_all_1.gst-plugins-good 
+    gst_all_1.gst-plugins-bad 
+    gst_all_1.gst-plugins-ugly 
+  ];
+
+  shellHook = with pkgs; '' '';
+}
