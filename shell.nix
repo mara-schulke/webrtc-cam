@@ -1,7 +1,7 @@
 with import <nixpkgs> {};
 
 stdenv.mkDerivation {
-  name = "thb-computergrafik";
+  name = "webrtc-cam";
 
   buildInputs = with pkgs; [
     openssl
