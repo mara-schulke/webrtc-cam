@@ -55,7 +55,7 @@ pub async fn handler(
 
     log::info!("registered peer {:?}", uuid);
 
-    let mut room_handle = creater_or_join_room(&mut websocket, uuid.clone(), &state).await?;
+    let mut room_handle = create_or_join_room(&mut websocket, uuid.clone(), &state).await?;
 
     log::info!("room state: {:#?}", room_handle);
     log::info!("entered signaling loop for {}", uuid);
@@ -81,13 +81,10 @@ pub async fn handler(
             room_msg = room_handle.recv().fuse() => {
                 log::info!("peer {} received room msg {:#?}", uuid, room_msg);
                 if let Ok(room_msg) = room_msg {
-                    let is_our_message = match room_msg {
-                        rooms::Message::Join { peer }
+                    let is_our_message = matches!(room_msg, rooms::Message::Join { peer }
                         | rooms::Message::Leave { peer }
                         | rooms::Message::Data { peer, .. }
-                        | rooms::Message::Signal { peer, .. } if peer == uuid => true,
-                        _ => false
-                    };
+                        | rooms::Message::Signal { peer, .. } if peer == uuid);
 
                     if !is_our_message {
                         websocket.send(ServerMessage::Room(room_msg).into()).await?;
@@ -115,7 +112,7 @@ async fn read_peer_msg(websocket: &mut WebSocket) -> anyhow::Result<PeerMessage>
     }
 }
 
-async fn creater_or_join_room(websocket: &mut WebSocket, id: Uuid, server_state: &ServerState) -> anyhow::Result<RoomHandle> {
+async fn create_or_join_room(websocket: &mut WebSocket, id: Uuid, server_state: &ServerState) -> anyhow::Result<RoomHandle> {
     let message = read_peer_msg(websocket).await?;
 
     let handle = match message {
