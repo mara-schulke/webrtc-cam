@@ -4,16 +4,21 @@ use async_std::net::TcpStream;
 use async_rustls::server::TlsStream;
 use async_tungstenite::WebSocketStream;
 use serde::{Deserialize, Serialize};
-use futures::{SinkExt, StreamExt};
+use futures::{FutureExt, SinkExt, StreamExt, select};
 use uuid::Uuid;
-use crate::rooms::Room;
+use crate::rooms::{self, Room, RoomHandle};
 use crate::ServerState;
+
+type WebSocket = WebSocketStream<TlsStream<TcpStream>>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum PeerMessage {
-    Create(()), // Create a room with an offer
+    Create,   // Create a room
     Join(u8), // Join a room
+
+    Signal(crate::signals::IceOrSdp), // Signaling
+    Data(String) // Plain Data Msg
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,8 +27,10 @@ pub enum ServerMessage {
     Hello(Uuid),
     Created(u8),
 
-    Joined(()), // joined and got an offer
-    Failed
+    Joined,
+    Error(String),
+
+    Room(rooms::Message),
 }
 
 impl From<ServerMessage> for Message {
@@ -33,7 +40,7 @@ impl From<ServerMessage> for Message {
 }
 
 pub async fn handler(
-    mut websocket: WebSocketStream<TlsStream<TcpStream>>,
+    mut websocket: WebSocket,
     state: ServerState
 ) -> anyhow::Result<()> {
     log::info!("websocket connection established");
@@ -48,58 +55,111 @@ pub async fn handler(
 
     log::info!("registered peer {:?}", uuid);
 
-    'msg: loop {
-        let websocket_msg = websocket
-            .next()
-            .await
-            .context("websocket stream ended unexpectedly")?;
+    let mut room_handle = creater_or_join_room(&mut websocket, uuid.clone(), &state).await?;
 
-        let message: PeerMessage = loop {
-            match websocket_msg {
-                Ok(Message::Text(_)) => log::error!("unexpected message type"),
-                Ok(Message::Ping(_) | Message::Pong(_)) => continue,
-                Ok(Message::Binary(blob)) => break serde_json::from_slice(blob.as_slice())?,
-                Ok(Message::Close(_)) => bail!("websocket: received close"),
-                Err(e) => bail!("websocket: failed to read message ({:?})", e)
-            }
-        };
+    log::info!("room state: {:#?}", room_handle);
+    log::info!("entered signaling loop for {}", uuid);
 
-        match message {
-            PeerMessage::Join(room_id) => {
-                let mut lock = state.lock().await;
-                let room = lock.0.get_mut(&room_id);
-                match room {
-                    Some(room) => {
-                        room.join(uuid);
-                        log::info!("(peer {}) joined {}", uuid, room_id);
-                        websocket.send(ServerMessage::Joined.into()).await?;
-                    }
-                    None => {
-                        log::error!("(peer {}) tried to join {} but it doesnt exist", uuid, room_id);
-                        websocket.send(ServerMessage::Failed.into()).await?;
-                    }
-                }
-            }
-            PeerMessage::Create => {
-                let mut lock = state.lock().await;
+    loop {
+        select! {
+            peer_msg = read_peer_msg(&mut websocket).fuse() => {
+                log::info!("received {:#?} from peer {}", peer_msg, uuid);
 
-                for room_id in 0..255 {
-                    if lock.0.contains_key(&room_id) {
-                        continue;
-                    }
-
-                    lock.0.insert(room_id, Room::new(uuid));
-                    websocket.send(ServerMessage::Created(room_id).into()).await?;
-
-                    log::info!("(peer {}) created {}", uuid, room_id);
-                    continue 'msg;
+                if peer_msg.is_err() {
+                    break Err(peer_msg.unwrap_err());
                 }
 
-                websocket.send(ServerMessage::Failed.into()).await?;
-                log::error!("(peer {}) tried to create room but all are used", uuid);
+                match peer_msg.unwrap() {
+                    PeerMessage::Signal(signal) => room_handle.send(rooms::Message::Signal { peer: uuid.clone(), signal }).await?,
+                    PeerMessage::Data(data) => room_handle.send(rooms::Message::Data { peer: uuid.clone(), data }).await?,
+                    _ => {
+                        websocket.send(ServerMessage::Error("Protocol error, only signaling allowed".to_string()).into()).await?;
+                        bail!("(peer {}) ignored protocol", uuid);
+                    }
+                }
+            },
+            room_msg = room_handle.recv().fuse() => {
+                log::info!("peer {} received room msg {:#?}", uuid, room_msg);
+                if let Ok(room_msg) = room_msg {
+                    let is_our_message = match room_msg {
+                        rooms::Message::Join { peer }
+                        | rooms::Message::Leave { peer }
+                        | rooms::Message::Data { peer, .. }
+                        | rooms::Message::Signal { peer, .. } if peer == uuid => true,
+                        _ => false
+                    };
+
+                    if !is_our_message {
+                        websocket.send(ServerMessage::Room(room_msg).into()).await?;
+                    } else {
+                        log::warn!("received our own message");
+                    }
+                }
             }
         }
-
-        log::info!("session state: {:#?}", state);
     }
 }
+
+async fn read_peer_msg(websocket: &mut WebSocket) -> anyhow::Result<PeerMessage> {
+    let websocket_msg = websocket.next().await
+        .context("websocket stream ended unexpectedly")?;
+
+    loop {
+        match websocket_msg {
+            Ok(Message::Text(_)) => log::error!("unexpected message type"),
+            Ok(Message::Ping(_) | Message::Pong(_)) => continue,
+            Ok(Message::Binary(blob)) => break serde_json::from_slice(blob.as_slice()).map_err(|e| e.into()),
+            Ok(Message::Close(_)) => bail!("websocket: received close"),
+            Err(e) => bail!("websocket: failed to read message ({:?})", e)
+        }
+    }
+}
+
+async fn creater_or_join_room(websocket: &mut WebSocket, id: Uuid, server_state: &ServerState) -> anyhow::Result<RoomHandle> {
+    let message = read_peer_msg(websocket).await?;
+
+    let handle = match message {
+        PeerMessage::Join(room_id) => {
+            let mut lock = server_state.lock().await;
+            let room = lock.0.get_mut(&room_id);
+
+            if room.is_none() {
+                websocket.send(ServerMessage::Error(format!("Room {} does not exist", room_id)).into()).await?;
+                bail!("(peer {}) tried to join {} but it doesnt exist", id, room_id);
+            }
+
+            let handle = room.unwrap().join(id.clone()).await;
+
+            log::info!("(peer {}) joined {}", id, room_id);
+            websocket.send(ServerMessage::Joined.into()).await?;
+
+            handle
+        }
+        PeerMessage::Create => {
+            let mut lock = server_state.lock().await;
+            let room_id = match (0..255).skip_while(|id| lock.0.contains_key(&id)).take(1).next() {
+                Some(room_id) => room_id,
+                None => {
+                    websocket.send(ServerMessage::Error("All rooms are in use".to_string()).into()).await?;
+                    bail!("(peer {}) tried to create room but all are used", id);
+                }
+            };
+            let room = Room::new(id.clone());
+            let handle = room.join(id.clone()).await;
+
+            lock.0.insert(room_id, room);
+            drop(lock);
+            websocket.send(ServerMessage::Created(room_id).into()).await?;
+            log::info!("(peer {}) created {}", id, room_id);
+
+            handle
+        }
+        _ => {
+            websocket.send(ServerMessage::Error("Protocol error, join or create a room first".to_string()).into()).await?;
+            bail!("(peer {}) ignored protocol", id);
+        }
+    };
+
+    Ok(handle)
+}
+
