@@ -18,7 +18,6 @@ pub enum PeerMessage {
     Join(u8), // Join a room
 
     Signal(crate::signals::IceOrSdp), // Signaling
-    Data(String) // Plain Data Msg
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,7 +70,6 @@ pub async fn handler(
 
                 match peer_msg.unwrap() {
                     PeerMessage::Signal(signal) => room_handle.send(rooms::Message::Signal { peer: uuid.clone(), signal }).await?,
-                    PeerMessage::Data(data) => room_handle.send(rooms::Message::Data { peer: uuid.clone(), data }).await?,
                     _ => {
                         websocket.send(ServerMessage::Error("Protocol error, only signaling allowed".to_string()).into()).await?;
                         bail!("(peer {}) ignored protocol", uuid);
@@ -83,7 +81,6 @@ pub async fn handler(
                 if let Ok(room_msg) = room_msg {
                     let is_our_message = matches!(room_msg, rooms::Message::Join { peer }
                         | rooms::Message::Leave { peer }
-                        | rooms::Message::Data { peer, .. }
                         | rooms::Message::Signal { peer, .. } if peer == uuid);
 
                     if !is_our_message {

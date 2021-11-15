@@ -19,10 +19,6 @@ pub enum Message {
     Signal {
         peer: Uuid,
         signal: crate::signals::IceOrSdp
-    },
-    Data {
-        peer: Uuid,
-        data: String
     }
 }
 
