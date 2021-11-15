@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <style>
+            .room {
+                display: flex;
+                width: 720px;
+                height: 202px;
+            }
+
+            .room video {
+                width: 50%;
+                background-color: gray;
+            }
+
+            .room video:first-child {
+                border-right: 1px solid lightgray;
+            }
+        </style>
+    </head>
+    <body>
+    <div id="app"></div></br>
+    <div class="room">
+        <video id="preview" autoplay playsinline>Your browser does not support video</video>
+        <video id="stream" autoplay playsinline>Your browser does not support video</video>
+    </div>
+    <pre id="log"></pre>
+        <script>
+            const websocket = new WebSocket('wss://localhost:8192');
+            const log = document.getElementById("log");
+            const app = document.getElementById("app");
+
+            const send = msg => {
+                const serialized = JSON.stringify(msg);
+                websocket.send(new Blob([serialized], {type : 'application/json'}));
+                log.append(`Sent ${serialized}\n`);
+            }
+
+            const message = {
+                join: room => ({type: "JOIN", data: room}),
+                create: () => ({type: "CREATE"}),
+                signals: {
+                    iceCandidate: candidate => ({type: "SIGNAL", data: candidate }),
+                    sdp: sdp => ({type: "SIGNAL", data: sdp }),
+                }
+            };
+
+            const state = {
+                error: null,
+                uuid: null,
+
+                stream: {
+                    preview: null,
+                    video: null,
+                    localMedia: null,
+                    peerConnection: null,
+                },
+
+                room: null,
+                roomLog: [],
+                roomCandidate: null
+            };
+
+            websocket.onmessage = msg =>
+                msg.data.text()
+                    .then(txt => {
+                        log.append(`Received ${txt}\n`);
+                        onServerMessage(JSON.parse(txt));
+                    });
+
+            websocket.onclose = () => {
+                state.error = 'Lost the connection';
+                render(state);
+                logStateUpdate();
+            };
+
+            let onServerMessage = msg => {
+                switch (msg.type) {
+                    case 'HELLO':
+                        state.uuid = msg.data;
+                        break;
+                    case 'ERROR':
+                        state.error = msg.data;
+                        break;
+                    case 'JOINED':
+                        state.room = state.roomCandidate;
+                        delete state.roomCandidate;
+                        state.stream.localMedia = getLocalMedia(state);
+                        startCall(state);
+                        break;
+                    case 'CREATED':
+                        state.room = msg.data;
+                        state.stream.localMedia = getLocalMedia(state);
+                        startCall(state);
+                        break;
+                    case 'ROOM':
+                        switch (msg.data.type) {
+                            case 'JOIN':
+                                state.roomLog.push(msg.data)
+                                console.log("start negotiation with", msg.data.data.peer)
+
+                                /*
+                                if (!state.stream.peerConnection) {
+                                    console.log("Recreate call")
+                                    startCall(state);
+                                }
+                                */
+
+                                // state.stream.peerConnection.restartIce();
+                                sendOffer(state);
+                                break;
+                            case 'LEAVE':
+                                state.roomLog.push(msg.data)
+                                stopCall(state);
+                                console.log("stop negotiation with", msg.data.data.peer)
+                                break;
+                            case 'SIGNAL':
+                                onSignal(msg.data);
+                                break;
+                        }
+                        break;
+                    default:
+                        console.log("Unknown", msg);
+                }
+
+                logStateUpdate();
+                render(state);
+            };
+
+            const logStateUpdate = () => {
+                log.append(`State ${JSON.stringify(state)}\n`);
+                if (state.error) {
+                    log.append(`Error (${state.error})\n`);
+                }
+            }
+
+            let render = state => {
+                app.innerHTML = '';
+
+                if (state.error) {
+                    app.innerHTML += `
+                        <strong>Error: ${state.error}</strong></br></br>
+                        <button onclick="window.location.reload()">Retry</button>
+                    `;
+                    return;
+                }
+
+                if (state.uuid) {
+                    app.innerHTML += `<strong>Hello ${state.uuid}</strong></br></br>`;
+                }
+
+                if (state.room == null) {
+                    app.innerHTML += `
+                        <button id="join-room">Join Room</button>
+                        <button id="create-room">Create Room</button>
+                    `;
+
+                    let join = document.getElementById("join-room");
+                    // leaking listeners since we dont clean up
+                    join.addEventListener("click", () => {
+                        let roomId;
+
+                        while (!(roomId + 1) || roomId < 0 || roomId > 255) {
+                            roomId = +prompt("Enter a valid room id (between 0 and 255)");
+                        }
+
+                        state.roomCandidate = roomId;
+                        logStateUpdate();
+                        send(message.join(roomId));
+                    });
+
+                    let create = document.getElementById("create-room");
+                    // leaking listeners since we dont clean up
+                    create.addEventListener("click", () => send(message.create())); // leaking listeners since we dont clean up
+                }
+
+                if (state.uuid && state.room != null) {
+                    let log = state.roomLog.map(entry => {
+                        if (entry.type === "LEAVE") {
+                            return `Peer ${entry.data.peer} left the room`;
+                        } else if (entry.type === "JOIN") {
+                            return `Peer ${entry.data.peer} joined the room`;
+                        } else {
+                            return '';
+                        }
+                    }).join('\n');
+
+                    app.innerHTML = `
+                        <strong>You (${state.uuid}) are in room ${state.room}</strong></br></br>
+                        <pre>${log}</pre>
+                    `;
+
+                    state.stream.preview = document.getElementById("preview");
+                    state.stream.video = document.getElementById("stream");
+                }
+            };
+
+            const startCall = state => {
+                console.log('Creating RTCPeerConnection');
+
+                state.stream.peerConnection = new RTCPeerConnection({
+                    iceServers: [
+                        {urls: "stun:stun.services.mozilla.com"},
+                        {urls: "stun:stun.l.google.com:19302"}
+                    ],
+                });
+
+                state.stream.peerConnection.ontrack = ev => {
+                    console.log("incoming stream", ev);
+
+                    if (state.stream.video.srcObject !== ev.streams[0]) {
+                        console.log("storing incoming stream", ev);
+                        state.stream.video.srcObject = ev.streams[0];
+                    }
+                };
+
+                state.stream.localMedia.then(stream => {
+                    console.log('Adding local stream to call', stream, state.stream.peerConnection);
+                    state.stream.peerConnection.addStream(stream);
+                    return stream;
+                }).catch(e => state.error = e);
+
+                state.stream.peerConnection.onicecandidate = event => {
+                    console.log("we hav ice candidate");
+                    // We have a candidate, send it to the remote party with the
+                    // same uuid
+                    if (event.candidate == null) {
+                        console.log("ICE Candidate was null, done");
+                        return;
+                    }
+
+                    send(message.signals.iceCandidate(event.candidate))
+                };
+            };
+
+            const stopCall = state => {
+                state.stream.video.srcObject.getVideoTracks().forEach(track => {
+                    track.stop();
+                    state.stream.video.srcObject.removeTrack(track);
+                });
+                state.stream.video.pause();
+                state.stream.video.src = "";
+                state.stream.video.load();
+            };
+
+            const sendOffer = state => {
+                state.stream.peerConnection.createOffer({ offerToReceiveVideo: true }).then(desc => {
+                    console.log("got local description: " + JSON.stringify(desc));
+
+                    state.stream.peerConnection.setLocalDescription(desc).then(() => {
+                        send(message.signals.sdp(state.stream.peerConnection.localDescription))
+                    });
+                }).catch(e => state.error = e);
+            }
+
+            const onSignal = msg => {
+                const signal = msg.data.signal;
+
+                if (signal.candidate && signal.sdpMLineIndex != null) {
+                    const candidate = new RTCIceCandidate(signal);
+                    state.stream.peerConnection.addIceCandidate(candidate).catch(e => state.error = e);
+                    return;
+                }
+
+                if (signal.type && signal.sdp) {
+                    console.log("received sdp signal", signal)
+                    state.stream.peerConnection.setRemoteDescription(signal)
+                        .then(() => {
+                            if (signal.type === "answer") return;
+
+                            state.stream.localMedia.then(stream => {
+                                state.stream.peerConnection.createAnswer().then(answer => {
+                                    state.stream.peerConnection.setLocalDescription(answer).then(() => {
+                                        send(message.signals.sdp(state.stream.peerConnection.localDescription))
+                                    }).catch(e => state.error = e);
+                                }).catch(e => state.error = e);
+
+                                return stream;
+                            });
+                        });
+
+                    return;
+                }
+
+                console.log("Received unknown signal", signal);
+            }
+
+            const getLocalMedia = state => {
+                return navigator.mediaDevices.getUserMedia({
+                    audio: false,
+                    video: true
+                }).then(stream => {
+                    console.log('Previewing local stream');
+                    state.stream.preview.srcObject = stream;
+                    return stream;
+                });
+            };
+        </script>
+    </body>
+</html>
