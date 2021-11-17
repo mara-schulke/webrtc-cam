@@ -6,7 +6,8 @@ use async_tungstenite::WebSocketStream;
 use serde::{Deserialize, Serialize};
 use futures::{FutureExt, SinkExt, StreamExt, select};
 use uuid::Uuid;
-use crate::rooms::{self, Room, RoomHandle};
+use crate::signals;
+use crate::rooms::{self, Room, RoomId, RoomHandle};
 use crate::ServerState;
 
 type WebSocket = WebSocketStream<TlsStream<TcpStream>>;
@@ -14,21 +15,17 @@ type WebSocket = WebSocketStream<TlsStream<TcpStream>>;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum PeerMessage {
-    Create,   // Create a room
-    Join(u8), // Join a room
-
-    Signal(crate::signals::IceOrSdp), // Signaling
+    JoinOrCreate(RoomId),
+    Signal(signals::IceOrSdp),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ServerMessage {
     Hello(Uuid),
-    Created(u8),
-
     Joined,
-    Error(String),
 
+    Error(String),
     Room(rooms::Message),
 }
 
@@ -54,9 +51,8 @@ pub async fn handler(
 
     log::info!("registered peer {:?}", uuid);
 
-    let mut room_handle = create_or_join_room(&mut websocket, uuid.clone(), &state).await?;
+    let mut room_handle = create_or_join_room(&mut websocket, uuid, &state).await?;
 
-    log::info!("room state: {:#?}", room_handle);
     log::info!("entered signaling loop for {}", uuid);
 
     loop {
@@ -69,7 +65,7 @@ pub async fn handler(
                 }
 
                 match peer_msg.unwrap() {
-                    PeerMessage::Signal(signal) => room_handle.send(rooms::Message::Signal { peer: uuid.clone(), signal }).await?,
+                    PeerMessage::Signal(signal) => room_handle.send(rooms::Message::Signal { peer: uuid, signal }).await?,
                     _ => {
                         websocket.send(ServerMessage::Error("Protocol error, only signaling allowed".to_string()).into()).await?;
                         bail!("(peer {}) ignored protocol", uuid);
@@ -112,48 +108,36 @@ async fn read_peer_msg(websocket: &mut WebSocket) -> anyhow::Result<PeerMessage>
 async fn create_or_join_room(websocket: &mut WebSocket, id: Uuid, server_state: &ServerState) -> anyhow::Result<RoomHandle> {
     let message = read_peer_msg(websocket).await?;
 
-    let handle = match message {
-        PeerMessage::Join(room_id) => {
+    match message {
+        PeerMessage::JoinOrCreate(room_id) => {
             let mut lock = server_state.lock().await;
-            let room = lock.0.get_mut(&room_id);
 
-            if room.is_none() {
-                websocket.send(ServerMessage::Error(format!("Room {} does not exist", room_id)).into()).await?;
-                bail!("(peer {}) tried to join {} but it doesnt exist", id, room_id);
-            }
-
-            let handle = room.unwrap().join(id.clone()).await;
-
-            log::info!("(peer {}) joined {}", id, room_id);
-            websocket.send(ServerMessage::Joined.into()).await?;
-
-            handle
-        }
-        PeerMessage::Create => {
-            let mut lock = server_state.lock().await;
-            let room_id = match (0..255).skip_while(|id| lock.0.contains_key(&id)).take(1).next() {
-                Some(room_id) => room_id,
+            let handle = match lock.0.get(&room_id) {
+                Some(room) => {
+                    let cloned = room.clone();
+                    drop(lock);
+                    let handle = cloned.join(id).await;
+                    log::info!("(peer {}) joined {}", id, room_id);
+                    handle
+                }
                 None => {
-                    websocket.send(ServerMessage::Error("All rooms are in use".to_string()).into()).await?;
-                    bail!("(peer {}) tried to create room but all are used", id);
+                    let room = Room::new(id, room_id);
+                    lock.0.insert(room_id, room.clone());
+                    drop(lock);
+                    let handle = room.join(id).await;
+                    log::info!("(peer {}) created {}", id, room_id);
+                    handle
                 }
             };
-            let room = Room::new(id.clone());
-            let handle = room.join(id.clone()).await;
 
-            lock.0.insert(room_id, room);
-            drop(lock);
-            websocket.send(ServerMessage::Created(room_id).into()).await?;
-            log::info!("(peer {}) created {}", id, room_id);
+            websocket.send(ServerMessage::Joined.into()).await?;
 
-            handle
+            Ok(handle)
         }
         _ => {
             websocket.send(ServerMessage::Error("Protocol error, join or create a room first".to_string()).into()).await?;
             bail!("(peer {}) ignored protocol", id);
         }
-    };
-
-    Ok(handle)
+    }
 }
 
