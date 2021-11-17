@@ -1,20 +1,14 @@
 use anyhow::bail;
 use async_std::net::TcpListener;
-use async_std::sync::{Arc, Mutex, MutexGuard};
 use async_std::task;
 use async_tungstenite::accept_async;
 use simple_logger::SimpleLogger;
-use std::collections::HashSet;
 use structopt::StructOpt;
-use uuid::Uuid;
 use std::str::FromStr;
 
-mod protocol;
-mod rooms;
-mod tls;
-mod signals;
-
-use rooms::RoomMap;
+use signaling::protocol;
+use signaling::state;
+use signaling::tls;
 
 #[derive(Clone, Debug)]
 pub enum Environment {
@@ -40,19 +34,6 @@ struct Options {
     environment: Environment
 }
 
-#[derive(Clone, Debug)]
-pub struct ServerState(Arc<Mutex<(RoomMap, HashSet<Uuid>)>>);
-
-impl<'a> ServerState {
-    pub fn new() -> Self {
-        Self(Arc::new(Mutex::new((RoomMap::new(), HashSet::new()))))
-    }
-
-    pub async fn lock(&'a self) -> MutexGuard<'a, (RoomMap, HashSet<Uuid>)> {
-        self.0.lock().await
-    }
-}
-
 #[async_std::main]
 async fn main() -> anyhow::Result<()> {
     SimpleLogger::new()
@@ -61,7 +42,7 @@ async fn main() -> anyhow::Result<()> {
         .unwrap();
 
     let Options { environment } = Options::from_args();
-    let state = ServerState::new();
+    let state = state::ServerState::new();
     let listener = TcpListener::bind("0.0.0.0:8192").await?;
 
     log::info!("running in mode {:?}", environment);
@@ -75,7 +56,7 @@ async fn main() -> anyhow::Result<()> {
     let log_state = state.clone();
     task::spawn(async move {
         loop {
-            let lock = log_state.0.lock().await;
+            let lock = log_state.lock().await;
             log::info!("Server State: {:#?}", lock);
             drop(lock);
             task::sleep(std::time::Duration::from_millis(3000)).await;
