@@ -1,12 +1,17 @@
-use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
-use async_broadcast::{Receiver, Sender, broadcast};
-use async_std::sync::{Mutex, Arc};
-use async_std::task::block_on;
 use anyhow::ensure;
 use std::convert::TryFrom;
 use std::fmt;
 use serde::{Serialize, Deserialize};
+
+#[cfg(feature = "server")]
+use std::collections::{HashMap, HashSet};
+#[cfg(feature = "server")]
+use async_broadcast::{Receiver, Sender, broadcast};
+#[cfg(feature = "server")]
+use async_std::sync::{Mutex, Arc};
+#[cfg(feature = "server")]
+use async_std::task::block_on;
 
 #[derive(Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(into = "String", try_from = "String")]
@@ -39,6 +44,7 @@ impl fmt::Debug for RoomId {
     }
 }
 
+#[cfg(feature = "server")]
 pub type RoomMap = HashMap<RoomId, Room>;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -56,6 +62,7 @@ pub enum Message {
     }
 }
 
+#[cfg(feature = "server")]
 #[derive(Clone)]
 pub struct Room {
     id: RoomId,
@@ -63,6 +70,7 @@ pub struct Room {
     inner: Arc<Mutex<Inner>>
 }
 
+#[cfg(feature = "server")]
 impl fmt::Debug for Room {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("Room")
@@ -72,12 +80,14 @@ impl fmt::Debug for Room {
     }
 }
 
+#[cfg(feature = "server")]
 #[derive(Clone, Debug)]
 struct Inner {
     peers: HashSet<Uuid>,
     channel: (Sender<Message>, Receiver<Message>)
 }
 
+#[cfg(feature = "server")]
 impl Room {
     pub fn new(creator: Uuid, id: RoomId) -> Room {
         Room {
@@ -95,8 +105,10 @@ impl Room {
     }
 }
 
+#[cfg(feature = "server")]
 pub struct RoomHandle(Uuid, Room, Sender<Message>, Receiver<Message>);
 
+#[cfg(feature = "server")]
 impl RoomHandle {
     pub async fn new(peer: Uuid, room: Room) -> Self {
         let mut inner = room.inner.lock().await;
@@ -117,6 +129,7 @@ impl RoomHandle {
     }
 }
 
+#[cfg(feature = "server")]
 impl Drop for RoomHandle {
     fn drop(&mut self) {
         let mut inner = block_on(self.1.inner.lock());
