@@ -1,20 +1,22 @@
 <!DOCTYPE html>
 <html>
     <head>
+        <meta charset="utf-8" />
         <style>
             .room {
                 display: flex;
-                width: 720px;
-                height: 202px;
+                flex-direction: column;
+                width: 1280px;
+                height: 1440px;
             }
 
             .room video {
-                width: 50%;
+                height: 50%;
                 background-color: gray;
             }
 
             .room video:first-child {
-                border-right: 1px solid lightgray;
+                border-bottom: 1px solid lightgray;
             }
         </style>
     </head>
@@ -26,7 +28,7 @@
     </div>
     <pre id="log"></pre>
         <script>
-            const websocket = new WebSocket('wss://localhost:8192');
+            const websocket = new WebSocket('wss://192.168.0.229:8192');
             const log = document.getElementById("log");
             const app = document.getElementById("app");
 
@@ -37,8 +39,7 @@
             }
 
             const message = {
-                join: room => ({type: "JOIN", data: room}),
-                create: () => ({type: "CREATE"}),
+                joinOrCreate: room => ({type: "JOIN_OR_CREATE", data: room}),
                 signals: {
                     iceCandidate: candidate => ({type: "SIGNAL", data: candidate }),
                     sdp: sdp => ({type: "SIGNAL", data: sdp }),
@@ -78,44 +79,41 @@
                 switch (msg.type) {
                     case 'HELLO':
                         state.uuid = msg.data;
+                        logStateUpdate();
                         break;
                     case 'ERROR':
                         state.error = msg.data;
+                        logStateUpdate();
                         break;
                     case 'JOINED':
                         state.room = state.roomCandidate;
-                        delete state.roomCandidate;
-                        state.stream.localMedia = getLocalMedia(state);
+                        state.roomCandidate = null;
                         startCall(state);
-                        break;
-                    case 'CREATED':
-                        state.room = msg.data;
-                        state.stream.localMedia = getLocalMedia(state);
-                        startCall(state);
+                        logStateUpdate();
                         break;
                     case 'ROOM':
                         switch (msg.data.type) {
                             case 'JOIN':
                                 state.roomLog.push(msg.data)
                                 console.log("start negotiation with", msg.data.data.peer)
-
-                                /*
                                 if (!state.stream.peerConnection) {
-                                    console.log("Recreate call")
                                     startCall(state);
                                 }
-                                */
-
-                                // state.stream.peerConnection.restartIce();
-                                sendOffer(state);
+                                setTimeout(() => sendOffer(state), 250);
+                                logStateUpdate();
                                 break;
                             case 'LEAVE':
                                 state.roomLog.push(msg.data)
                                 stopCall(state);
                                 console.log("stop negotiation with", msg.data.data.peer)
+                                logStateUpdate();
                                 break;
                             case 'SIGNAL':
-                                onSignal(msg.data);
+                                if (state.stream.peerConnection) {
+                                    onSignal(msg.data);
+                                } else {
+                                    console.log("ignored signal since no peer connection is up")
+                                }
                                 break;
                         }
                         break;
@@ -123,7 +121,6 @@
                         console.log("Unknown", msg);
                 }
 
-                logStateUpdate();
                 render(state);
             };
 
@@ -151,27 +148,23 @@
 
                 if (state.room == null) {
                     app.innerHTML += `
-                        <button id="join-room">Join Room</button>
-                        <button id="create-room">Create Room</button>
+                        <button id="join-or-create-room">Join Or Create Room</button>
                     `;
 
-                    let join = document.getElementById("join-room");
+                    let btn = document.getElementById("join-or-create-room");
                     // leaking listeners since we dont clean up
-                    join.addEventListener("click", () => {
-                        let roomId;
+                    btn.addEventListener("click", () => {
+                        let params = new URLSearchParams(window.location.search);
+                        let roomId = params.get("room");
 
-                        while (!(roomId + 1) || roomId < 0 || roomId > 255) {
-                            roomId = +prompt("Enter a valid room id (between 0 and 255)");
+                        while (!roomId || roomId?.length !== 64 || parseInt(roomId, 16) == NaN) {
+                            roomId = prompt("Enter a valid room id (256 bit hex encoded)").toString();
                         }
 
                         state.roomCandidate = roomId;
                         logStateUpdate();
-                        send(message.join(roomId));
+                        send(message.joinOrCreate(roomId));
                     });
-
-                    let create = document.getElementById("create-room");
-                    // leaking listeners since we dont clean up
-                    create.addEventListener("click", () => send(message.create())); // leaking listeners since we dont clean up
                 }
 
                 if (state.uuid && state.room != null) {
@@ -198,12 +191,25 @@
             const startCall = state => {
                 console.log('Creating RTCPeerConnection');
 
+                state.stream.localMedia = getLocalMedia(state).then(stream => {
+                    console.log('Adding local stream to call', stream, state.stream.peerConnection);
+                    stream.getTracks().forEach(track => state.stream.peerConnection.addTrack(track, stream));
+                    return stream;
+                }).catch(e => state.error = e);
+
                 state.stream.peerConnection = new RTCPeerConnection({
                     iceServers: [
                         {urls: "stun:stun.services.mozilla.com"},
                         {urls: "stun:stun.l.google.com:19302"}
                     ],
                 });
+
+
+                state.stream.peerConnection.ondatachannel = console.warn;
+                state.stream.peerConnection.oniceconnectionstatechange = console.warn;
+                state.stream.peerConnection.onicegatheringstatechange = console.warn;
+                state.stream.peerConnection.onnegotiationneeded = () => sendOffer(state);
+                state.stream.peerConnection.onsignalingstatechange = console.warn;
 
                 state.stream.peerConnection.ontrack = ev => {
                     console.log("incoming stream", ev);
@@ -214,17 +220,11 @@
                     }
                 };
 
-                state.stream.localMedia.then(stream => {
-                    console.log('Adding local stream to call', stream, state.stream.peerConnection);
-                    state.stream.peerConnection.addStream(stream);
-                    return stream;
-                }).catch(e => state.error = e);
-
                 state.stream.peerConnection.onicecandidate = event => {
                     console.log("we hav ice candidate");
                     // We have a candidate, send it to the remote party with the
                     // same uuid
-                    if (event.candidate == null) {
+                    if (event.candidate === null || event.candidate === "") {
                         console.log("ICE Candidate was null, done");
                         return;
                     }
@@ -241,6 +241,13 @@
                 state.stream.video.pause();
                 state.stream.video.src = "";
                 state.stream.video.load();
+
+                state.stream.peerConnection.close();
+                state.stream = {
+                    ...state.stream,
+                    localMedia: null,
+                    peerConnection: null,
+                };
             };
 
             const sendOffer = state => {
@@ -250,7 +257,7 @@
                     state.stream.peerConnection.setLocalDescription(desc).then(() => {
                         send(message.signals.sdp(state.stream.peerConnection.localDescription))
                     });
-                }).catch(e => state.error = e);
+                });
             }
 
             const onSignal = msg => {
@@ -288,7 +295,7 @@
             const getLocalMedia = state => {
                 return navigator.mediaDevices.getUserMedia({
                     audio: false,
-                    video: true
+                    video: { width: { ideal: 1920 }, height: { ideal: 1080 }, advanced: [{ aspectRatio: 16/9 }] }
                 }).then(stream => {
                     console.log('Previewing local stream');
                     state.stream.preview.srcObject = stream;
