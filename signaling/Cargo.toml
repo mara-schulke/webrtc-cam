@@ -3,20 +3,37 @@ name = "signaling"
 description = "A simple signaling server to connect webrtc peers"
 version = "0.1.0"
 edition = "2018"
+default-run = "signaling"
+
+[[bin]]
+name = "signaling"
+path = "src/main.rs"
+required-features = ["server"]
 
 [dependencies]
 anyhow = "1"
-async-rustls = "0.2"
+async-rustls = { version = "0.2", optional = true }
 async-std = { version = "1.10", features = [ "attributes" ] }
-async-sub = { git = "https://github.com/Hum-Systems/async-sub.git" }
-async-broadcast = "0.3.4"
+async-broadcast = { version = "0.3.4", optional = true }
 async-tungstenite = "0.15"
 futures = "0.3"
-simple_logger = "*"
+simple_logger = { version = "*", optional = true }
 log = "*"
-rustls-acme = "0.2"
-rustls = "0.19"
+rustls-acme = { version = "0.2", optional = true }
+rustls = { version = "0.19", optional = true }
 uuid = { version = "0.8", features = ["serde", "v4"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "*"
-structopt = "0.3"
+structopt = { version = "0.3", optional = true }
+
+[features]
+default = ["server"]
+server = [
+    "async-rustls",
+    "async-broadcast",
+    "rustls",
+    "rustls-acme",
+    "simple_logger",
+    "structopt",
+]
+
