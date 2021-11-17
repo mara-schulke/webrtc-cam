@@ -3,9 +3,43 @@ use uuid::Uuid;
 use async_broadcast::{Receiver, Sender, broadcast};
 use async_std::sync::{Mutex, Arc};
 use async_std::task::block_on;
+use anyhow::ensure;
+use std::convert::TryFrom;
+use std::fmt;
 use serde::{Serialize, Deserialize};
 
-pub type RoomMap = HashMap<u8, Room>;
+#[derive(Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(into = "String", try_from = "String")]
+pub struct RoomId(Uuid, Uuid);
+
+impl TryFrom<String> for RoomId {
+    type Error = anyhow::Error;
+
+    fn try_from(s: String) -> anyhow::Result<Self> {
+        ensure!(s.len() == 64, "Should be a 64 char hex string");
+        Ok(Self(Uuid::from_slice(&s.as_bytes()[0..16])?, Uuid::from_slice(&s.as_bytes()[16..32])?))
+    }
+}
+
+impl From<RoomId> for String {
+    fn from(id: RoomId) -> String {
+        format!("{}{}", &id.0.to_simple(), &id.1.to_simple())
+    }
+}
+
+impl fmt::Display for RoomId {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", String::from(*self))
+    }
+}
+
+impl fmt::Debug for RoomId {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_tuple("RoomId").field(&String::from(*self)).finish()
+    }
+}
+
+pub type RoomMap = HashMap<RoomId, Room>;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "SCREAMING_SNAKE_CASE")]
@@ -22,10 +56,20 @@ pub enum Message {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Room {
+    id: RoomId,
     creator: Uuid,
     inner: Arc<Mutex<Inner>>
+}
+
+impl fmt::Debug for Room {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Room")
+            .field("id", &self.id)
+            .field("creator", &self.creator)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -35,12 +79,13 @@ struct Inner {
 }
 
 impl Room {
-    pub fn new(creator: Uuid) -> Room {
+    pub fn new(creator: Uuid, id: RoomId) -> Room {
         Room {
+            id,
             creator,
             inner: Arc::new(Mutex::new(Inner {
                 peers: HashSet::new(),
-                channel: broadcast(512)
+                channel: broadcast(4096)
             }))
         }
     }
@@ -50,7 +95,6 @@ impl Room {
     }
 }
 
-#[derive(Debug)]
 pub struct RoomHandle(Uuid, Room, Sender<Message>, Receiver<Message>);
 
 impl RoomHandle {
