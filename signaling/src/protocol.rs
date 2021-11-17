@@ -1,15 +1,24 @@
-use anyhow::{bail, Context};
-use async_tungstenite::tungstenite::Message;
-use async_std::net::TcpStream;
-use async_rustls::server::TlsStream;
-use async_tungstenite::WebSocketStream;
-use serde::{Deserialize, Serialize};
-use futures::{FutureExt, SinkExt, StreamExt, select};
 use uuid::Uuid;
+use serde::{Deserialize, Serialize};
+use async_tungstenite::tungstenite::Message;
 use crate::signals;
-use crate::rooms::{self, Room, RoomId, RoomHandle};
-use crate::ServerState;
+use crate::rooms::{self, RoomId};
 
+#[cfg(feature = "server")]
+use anyhow::{bail, Context};
+#[cfg(feature = "server")]
+use async_std::net::TcpStream;
+#[cfg(feature = "server")]
+use async_rustls::server::TlsStream;
+#[cfg(feature = "server")]
+use async_tungstenite::WebSocketStream;
+#[cfg(feature = "server")]
+use futures::{FutureExt, SinkExt, StreamExt, select};
+#[cfg(feature = "server")]
+use crate::rooms::{Room, RoomHandle};
+#[cfg(feature = "server")]
+use crate::state::ServerState;
+#[cfg(feature = "server")]
 type WebSocket = WebSocketStream<TlsStream<TcpStream>>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,6 +44,7 @@ impl From<ServerMessage> for Message {
     }
 }
 
+#[cfg(feature = "server")]
 pub async fn handler(
     mut websocket: WebSocket,
     state: ServerState
@@ -90,6 +100,7 @@ pub async fn handler(
     }
 }
 
+#[cfg(feature = "server")]
 async fn read_peer_msg(websocket: &mut WebSocket) -> anyhow::Result<PeerMessage> {
     let websocket_msg = websocket.next().await
         .context("websocket stream ended unexpectedly")?;
@@ -105,6 +116,7 @@ async fn read_peer_msg(websocket: &mut WebSocket) -> anyhow::Result<PeerMessage>
     }
 }
 
+#[cfg(feature = "server")]
 async fn create_or_join_room(websocket: &mut WebSocket, id: Uuid, server_state: &ServerState) -> anyhow::Result<RoomHandle> {
     let message = read_peer_msg(websocket).await?;
 
@@ -140,4 +152,3 @@ async fn create_or_join_room(websocket: &mut WebSocket, id: Uuid, server_state: 
         }
     }
 }
-
