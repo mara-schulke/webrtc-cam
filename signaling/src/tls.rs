@@ -48,8 +48,8 @@ pub async fn create_acme_acceptor() -> Acceptor {
 
 pub async fn create_self_signed_acceptor() -> Acceptor {
     const BASE_PATH: &str = "./keys";
-    const KEY_FILE: &str = "domain_key,localhost,2020-12-01,p256.pem";
-    const CERT_FILE: &str = "domain_cert,localhost,2020-12-01,p256.pem";
+    const KEY_FILE: &str = "localhost.key";
+    const CERT_FILE: &str = "localhost.crt";
 
     let mut tls_config = ServerConfig::new(async_rustls::rustls::NoClientAuth::new());
 
