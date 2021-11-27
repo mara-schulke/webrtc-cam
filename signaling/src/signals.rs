@@ -9,15 +9,15 @@ pub enum IceOrSdp {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Ice {
-    candidate: String,
+    pub candidate: String,
     #[serde(rename = "sdpMLineIndex")]
-    line_index: u32,
+    pub line_index: u32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Sdp {
-    r#type: SdpType,
-    sdp: String,
+    pub r#type: SdpType,
+    pub sdp: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
