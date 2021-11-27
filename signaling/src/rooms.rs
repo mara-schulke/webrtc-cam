@@ -17,12 +17,18 @@ use async_std::task::block_on;
 #[serde(into = "String", try_from = "String")]
 pub struct RoomId(Uuid, Uuid);
 
+impl RoomId {
+    pub fn new(l: Uuid, r: Uuid) -> Self {
+        Self(l, r)
+    }
+}
+
 impl TryFrom<String> for RoomId {
     type Error = anyhow::Error;
 
     fn try_from(s: String) -> anyhow::Result<Self> {
         ensure!(s.len() == 64, "Should be a 64 char hex string");
-        Ok(Self(Uuid::from_slice(&s.as_bytes()[0..16])?, Uuid::from_slice(&s.as_bytes()[16..32])?))
+        Ok(Self(Uuid::parse_str(&s[0..32])?, Uuid::parse_str(&s[32..64])?))
     }
 }
 
