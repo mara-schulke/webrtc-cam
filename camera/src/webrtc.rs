@@ -30,6 +30,11 @@ const WEBRTC_PIPELINE_FANCY: &str = "v4l2src device=/dev/video0 ! videorate ! vi
     ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! webrtcbin. \
     webrtcbin name=webrtcbin stun-server=stun://stun.l.google.com:19302 ";
 
+#[allow(unused)]
+const WEBRTC_PIPELINE_LIBCAMERA: &str = "libcamerasrc ! video/x-raw,width=1600,height=1200 \
+     ! videoconvert ! videoflip motion=vertical-flip ! vp8enc ! rtpvp8pay pt=96 \
+     ! webrtcbin. webrtcbin name=webrtcbin stun-server=stun://stun.l.google.com:19302";
+
 pub async fn entry(mut websocket: crate::signaling::WebSocket) -> anyhow::Result<()> {
     let pipeline = gstreamer::parse_launch(WEBRTC_PIPELINE_FANCY)
         .unwrap()
@@ -43,35 +48,13 @@ pub async fn entry(mut websocket: crate::signaling::WebSocket) -> anyhow::Result
         .map_err(|_| anyhow!("Failed to downcast the pipeline to the webrtc bin"))?;
 
     webrtcbin.set_element_flags(ElementFlags::SINK);
-
-    let pipeline_clone = pipeline.clone();
-    std::thread::spawn(move || {
-        let bus = match pipeline_clone.bus() {
-            Some(bus) => bus,
-            None => {
-                log::error!("could not acquire bus");
-                return;
-            }
-        };
-
-        for msg in bus.iter() {
-            match msg.type_() {
-                MessageType::Latency => match pipeline_clone.recalculate_latency() {
-                    Ok(_) => log::info!("recalculated latency"),
-                    Err(err) => log::error!("recalculate_latency: {:?}", err),
-                },
-                MessageType::Error => log::error!("error msg on test device bus: {:?}", msg),
-                _ => {}
-            }
-        }
-    });
-
-    pipeline.set_state(gstreamer::State::Playing)?;
+    pipeline.set_state(gstreamer::State::Ready)?;
     let handler = crate::florian::attach(webrtcbin)?;
 
     loop {
         futures::select! {
             local = handler.channel().recv().fuse() => {
+                pipeline.set_state(gstreamer::State::Playing)?;
                 signaling::write_to_ws(&mut websocket, &PeerMessage::Signal(local.expect("signal not there"))).await?;
             }
             remote = signaling::read_from_ws(&mut websocket).fuse() => {
@@ -81,10 +64,11 @@ pub async fn entry(mut websocket: crate::signaling::WebSocket) -> anyhow::Result
                         RoomMessage::Join { .. } => {
                             pipeline.set_state(gstreamer::State::Playing)?;
                             log::info!("Set pipeline to play, starting negotiation");
-                            handler.negotiate();
                         },
                         RoomMessage::Leave { .. } => {
                             pipeline.set_state(gstreamer::State::Paused)?;
+                            pipeline.set_state(gstreamer::State::Ready)?;
+                            pipeline.set_state(gstreamer::State::Null)?;
                             log::info!("Set pipeline to pause, stopped stream, restarting..");
                             return Ok(())
                         }
@@ -93,15 +77,14 @@ pub async fn entry(mut websocket: crate::signaling::WebSocket) -> anyhow::Result
                     Err(e) => bail!("Websocket error {:#?}", e)
                 }
             }
-            _ = task::sleep(std::time::Duration::from_millis(500)).fuse() => {
+            _ = task::sleep(std::time::Duration::from_millis(2000)).fuse() => {
+
                handler.bin().emit_by_name("get-stats", &[
                     &None::<gstreamer::Pad>,
                     &gstreamer::Promise::with_change_func(move |reply| {
-                        log::info!("status {:#?}", {
-                            let reply = reply.expect("we needed stats :(").expect("same");
-                            reply.iter().for_each(|(k,v)| log::info!("k {} v {:#?}\n", k, v));
-                            ""
-                        });
+                        log::debug!("status:");
+                        let reply = reply.expect("we needed stats :(").expect("same");
+                        reply.iter().for_each(|(k,v)| log::debug!("\t{}: v {:#?}", k, v));
                     })
                 ]).ok();
             }
