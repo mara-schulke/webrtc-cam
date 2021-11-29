@@ -3,7 +3,7 @@ use anyhow::{anyhow, bail, Context};
 use async_std::task;
 use futures::FutureExt;
 use gstreamer::prelude::*;
-use gstreamer::{ElementFlags, MessageType};
+use gstreamer::ElementFlags;
 use signaling_types::protocol::{PeerMessage, ServerMessage};
 use signaling_types::rooms::Message as RoomMessage;
 
@@ -54,7 +54,6 @@ pub async fn entry(mut websocket: crate::signaling::WebSocket) -> anyhow::Result
     loop {
         futures::select! {
             local = handler.channel().recv().fuse() => {
-                pipeline.set_state(gstreamer::State::Playing)?;
                 signaling::write_to_ws(&mut websocket, &PeerMessage::Signal(local.expect("signal not there"))).await?;
             }
             remote = signaling::read_from_ws(&mut websocket).fuse() => {
@@ -78,7 +77,6 @@ pub async fn entry(mut websocket: crate::signaling::WebSocket) -> anyhow::Result
                 }
             }
             _ = task::sleep(std::time::Duration::from_millis(2000)).fuse() => {
-
                handler.bin().emit_by_name("get-stats", &[
                     &None::<gstreamer::Pad>,
                     &gstreamer::Promise::with_change_func(move |reply| {
