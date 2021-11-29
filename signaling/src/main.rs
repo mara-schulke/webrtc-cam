@@ -55,11 +55,23 @@ async fn main() -> anyhow::Result<()> {
 
     let log_state = state.clone();
     task::spawn(async move {
+        let lock = log_state.lock().await;
+        let mut old_state = format!("{:#?}", lock);
+        drop(lock);
+
+        log::info!("state initialized {}", old_state);
+
         loop {
+            task::sleep(std::time::Duration::from_millis(1000)).await;
+
             let lock = log_state.lock().await;
-            log::info!("Server State: {:#?}", lock);
+            let current_state = format!("{:#?}", lock);
             drop(lock);
-            task::sleep(std::time::Duration::from_millis(3000)).await;
+
+            if current_state != old_state {
+                log::info!("state changed {}", current_state);
+                old_state = current_state;
+            }
         }
     });
 
