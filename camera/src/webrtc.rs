@@ -65,8 +65,6 @@ pub async fn entry(mut websocket: crate::signaling::WebSocket) -> anyhow::Result
                             log::info!("Set pipeline to play, starting negotiation");
                         },
                         RoomMessage::Leave { .. } => {
-                            pipeline.set_state(gstreamer::State::Paused)?;
-                            pipeline.set_state(gstreamer::State::Ready)?;
                             pipeline.set_state(gstreamer::State::Null)?;
                             log::info!("Set pipeline to pause, stopped stream, restarting..");
                             return Ok(())
