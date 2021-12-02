@@ -7,11 +7,11 @@
                 display: flex;
                 flex-direction: column;
                 width: 1280px;
-                height: 1440px;
+                height: 720px;
             }
 
             .room video {
-                height: 50%;
+                /*height: 50%;*/
                 background-color: gray;
             }
 
@@ -23,12 +23,12 @@
     <body>
     <div id="app"></div></br>
     <div class="room">
-        <video id="preview" autoplay playsinline>Your browser does not support video</video>
+        <!--<video id="preview" autoplay playsinline>Your browser does not support video</video>-->
         <video id="stream" autoplay playsinline>Your browser does not support video</video>
     </div>
     <pre id="log"></pre>
         <script>
-            const websocket = new WebSocket('wss://192.168.0.229:8192');
+            const websocket = new WebSocket('wss://localhost:8192');
             const log = document.getElementById("log");
             const app = document.getElementById("app");
 
@@ -40,10 +40,7 @@
 
             const message = {
                 joinOrCreate: room => ({type: "JOIN_OR_CREATE", data: room}),
-                signals: {
-                    iceCandidate: candidate => ({type: "SIGNAL", data: candidate }),
-                    sdp: sdp => ({type: "SIGNAL", data: sdp }),
-                }
+                signal: payload => ({type: "SIGNAL", data: payload }),
             };
 
             const state = {
@@ -99,13 +96,14 @@
                                 if (!state.stream.peerConnection) {
                                     startCall(state);
                                 }
-                                setTimeout(() => sendOffer(state), 250);
                                 logStateUpdate();
                                 break;
                             case 'LEAVE':
                                 state.roomLog.push(msg.data)
-                                stopCall(state);
-                                console.log("stop negotiation with", msg.data.data.peer)
+                                if (state.stream.peerConnection) {
+                                    stopCall(state);
+                                    console.log("stop negotiation with", msg.data.data.peer)
+                                }
                                 logStateUpdate();
                                 break;
                             case 'SIGNAL':
@@ -147,9 +145,7 @@
                 }
 
                 if (state.room == null) {
-                    app.innerHTML += `
-                        <button id="join-or-create-room">Join Or Create Room</button>
-                    `;
+                    app.innerHTML += `<button id="join-or-create-room">Join Or Create Room</button>`;
 
                     let btn = document.getElementById("join-or-create-room");
                     // leaking listeners since we dont clean up
@@ -191,50 +187,50 @@
             const startCall = state => {
                 console.log('Creating RTCPeerConnection');
 
-                state.stream.localMedia = getLocalMedia(state).then(stream => {
+                /*
+                 state.stream.localMedia = getLocalMedia(state).then(stream => {
                     console.log('Adding local stream to call', stream, state.stream.peerConnection);
-                    stream.getTracks().forEach(track => state.stream.peerConnection.addTrack(track, stream));
+                    //stream.getTracks().forEach(track => state.stream.peerConnection.addTrack(track, stream));
                     return stream;
                 }).catch(e => state.error = e);
+                */
 
                 state.stream.peerConnection = new RTCPeerConnection({
                     iceServers: [
-                        {urls: "stun:stun.services.mozilla.com"},
                         {urls: "stun:stun.l.google.com:19302"}
                     ],
                 });
 
-
                 state.stream.peerConnection.ondatachannel = console.warn;
-                state.stream.peerConnection.oniceconnectionstatechange = console.warn;
-                state.stream.peerConnection.onicegatheringstatechange = console.warn;
+                state.stream.peerConnection.oniceconnectionstatechange = ev => console.warn("ice connection state change", ev.currentTarget.iceConnectionState);
+                state.stream.peerConnection.onicegatheringstatechange = ev => console.warn("ice gathering state change", ev.currentTarget.iceGatheringState);
                 state.stream.peerConnection.onnegotiationneeded = () => sendOffer(state);
-                state.stream.peerConnection.onsignalingstatechange = console.warn;
+                state.stream.peerConnection.onsignalingstatechange = ev => console.warn("signaling state change", ev.currentTarget.signalingState);
 
                 state.stream.peerConnection.ontrack = ev => {
                     console.log("incoming stream", ev);
+                    console.log(ev.streams[0].getTracks());
 
                     if (state.stream.video.srcObject !== ev.streams[0]) {
                         console.log("storing incoming stream", ev);
-                        state.stream.video.srcObject = ev.streams[0];
+                        state.stream.video.srcObject = ev.streams[0]
+                        console.log(state.stream.video)
                     }
                 };
 
                 state.stream.peerConnection.onicecandidate = event => {
-                    console.log("we hav ice candidate");
-                    // We have a candidate, send it to the remote party with the
-                    // same uuid
                     if (event.candidate === null || event.candidate === "") {
                         console.log("ICE Candidate was null, done");
                         return;
                     }
 
-                    send(message.signals.iceCandidate(event.candidate))
+                    send(message.signal(event.candidate))
                 };
             };
 
             const stopCall = state => {
-                state.stream.video.srcObject.getVideoTracks().forEach(track => {
+                console.log(state.stream.video)
+                state.stream.video.srcObject?.getVideoTracks().forEach(track => {
                     track.stop();
                     state.stream.video.srcObject.removeTrack(track);
                 });
@@ -251,13 +247,10 @@
             };
 
             const sendOffer = state => {
-                state.stream.peerConnection.createOffer({ offerToReceiveVideo: true }).then(desc => {
-                    console.log("got local description: " + JSON.stringify(desc));
-
-                    state.stream.peerConnection.setLocalDescription(desc).then(() => {
-                        send(message.signals.sdp(state.stream.peerConnection.localDescription))
-                    });
-                });
+                state.stream.peerConnection.createOffer({ offerToReceiveVideo: true })
+                    .then(desc => { console.log("got local description: " + JSON.stringify(desc)); return desc})
+                    .then(desc => state.stream.peerConnection.setLocalDescription(desc))
+                    .then(() => send(message.signal(state.stream.peerConnection.localDescription)))
             }
 
             const onSignal = msg => {
@@ -275,15 +268,10 @@
                         .then(() => {
                             if (signal.type === "answer") return;
 
-                            state.stream.localMedia.then(stream => {
-                                state.stream.peerConnection.createAnswer().then(answer => {
-                                    state.stream.peerConnection.setLocalDescription(answer).then(() => {
-                                        send(message.signals.sdp(state.stream.peerConnection.localDescription))
-                                    }).catch(e => state.error = e);
-                                }).catch(e => state.error = e);
-
-                                return stream;
-                            });
+                            state.stream.peerConnection.createAnswer()
+                                .then(answer => state.stream.peerConnection.setLocalDescription(answer))
+                                .then(() => send(message.signal(state.stream.peerConnection.localDescription)))
+                                .catch(e => state.error = e);
                         });
 
                     return;
@@ -292,6 +280,7 @@
                 console.log("Received unknown signal", signal);
             }
 
+            /*
             const getLocalMedia = state => {
                 return navigator.mediaDevices.getUserMedia({
                     audio: false,
@@ -302,6 +291,7 @@
                     return stream;
                 });
             };
+             */
         </script>
     </body>
 </html>
