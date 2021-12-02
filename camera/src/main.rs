@@ -20,11 +20,12 @@ struct Options {
 
 #[async_std::main]
 async fn main() -> anyhow::Result<()> {
+    gstreamer::init().unwrap();
+
     SimpleLogger::new()
         .with_level(log::LevelFilter::Debug)
         .init()
         .unwrap();
-    gstreamer::init().unwrap();
 
     async fn stream() -> anyhow::Result<()> {
         let websocket = signaling::entry(ENVIRONMENT).await?;
