@@ -4,19 +4,17 @@ version = "0.1.0"
 edition = "2018"
 
 [dependencies]
-futures = "0.3"
-async-std = { version = "1.1", features = ["attributes", "unstable"]}
+anyhow = "*"
+async-rustls = { version = "0.2", features = ["dangerous_configuration"] }
+async-std = { version = "1.1", features = ["attributes", "unstable", "tokio1"]}
 async-tungstenite = { version = "0.8", features = ["async-std-runtime"] }
-gstreamer = { version = "0.17", features = ["v1_18"] }
-gstreamer-app = { version = "0.17", features = ["v1_18"] }
-gstreamer-sdp = { version = "0.17", features = ["v1_18"] }
-gstreamer-webrtc = { version = "0.17", features = ["v1_18"] }
+bytes = "1.1"
+futures = "0.3"
 log = "0.4"
-simple_logger = "1.6"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1"
-async-rustls = { version = "0.2", features = ["dangerous_configuration"] }
+simple_logger = "2"
 url = "2.2"
 uuid = "0.8"
-anyhow = "*"
-signaling-types = { path = "../signaling", default-features = false, package = "signaling" }
+webrtc = "0.4"
+opencv = "0.66"

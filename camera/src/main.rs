@@ -1,34 +1,19 @@
-mod webrtc;
 mod signaling;
+mod signals;
+mod webrtc;
 
-use url::Url;
-use simple_logger::SimpleLogger;
 use async_std::task;
-
-#[derive(Clone, Copy, Debug)]
-pub enum Environment {
-    Development
-}
-
-const ENVIRONMENT: Environment = Environment::Development;
-
-struct Options {
-    environment: Environment,
-    signaling_server: Url,
-    room_id: signaling_types::rooms::RoomId
-}
+use simple_logger::SimpleLogger;
 
 #[async_std::main]
 async fn main() -> anyhow::Result<()> {
-    gstreamer::init().unwrap();
-
     SimpleLogger::new()
         .with_level(log::LevelFilter::Debug)
         .init()
         .unwrap();
 
     async fn stream() -> anyhow::Result<()> {
-        let websocket = signaling::entry(ENVIRONMENT).await?;
+        let websocket = signaling::entry().await?;
         webrtc::entry(websocket).await
     }
 
