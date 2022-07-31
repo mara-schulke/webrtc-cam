@@ -1,4 +1,7 @@
 target
 keys
 Cargo.lock
+*.h264
+*.mp4
+*.ogg
 **/*.rs.bk

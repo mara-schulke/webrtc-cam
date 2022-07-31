@@ -1,25 +1,23 @@
-use uuid::Uuid;
-use serde::{Deserialize, Serialize};
-use async_tungstenite::tungstenite::Message;
-use crate::signals;
 use crate::rooms::{self, RoomId};
+use crate::signals;
+use async_tungstenite::tungstenite::Message;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
-#[cfg(feature = "server")]
-use anyhow::{bail, Context};
-#[cfg(feature = "server")]
-use async_std::net::TcpStream;
-#[cfg(feature = "server")]
-use async_rustls::server::TlsStream;
-#[cfg(feature = "server")]
-use async_tungstenite::WebSocketStream;
-#[cfg(feature = "server")]
-use futures::{FutureExt, SinkExt, StreamExt, select};
 #[cfg(feature = "server")]
 use crate::rooms::{Room, RoomHandle};
 #[cfg(feature = "server")]
 use crate::state::ServerState;
 #[cfg(feature = "server")]
-type WebSocket = WebSocketStream<TlsStream<TcpStream>>;
+use anyhow::{bail, Context};
+#[cfg(feature = "server")]
+use async_std::net::TcpStream;
+#[cfg(feature = "server")]
+use async_tungstenite::WebSocketStream;
+#[cfg(feature = "server")]
+use futures::{select, FutureExt, SinkExt, StreamExt};
+#[cfg(feature = "server")]
+type WebSocket = WebSocketStream<TcpStream>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "SCREAMING_SNAKE_CASE")]
@@ -45,10 +43,7 @@ impl From<ServerMessage> for Message {
 }
 
 #[cfg(feature = "server")]
-pub async fn handler(
-    mut websocket: WebSocket,
-    state: ServerState
-) -> anyhow::Result<()> {
+pub async fn handler(mut websocket: WebSocket, state: ServerState) -> anyhow::Result<()> {
     log::info!("websocket connection established");
 
     let uuid = Uuid::new_v4();
@@ -102,22 +97,30 @@ pub async fn handler(
 
 #[cfg(feature = "server")]
 async fn read_peer_msg(websocket: &mut WebSocket) -> anyhow::Result<PeerMessage> {
-    let websocket_msg = websocket.next().await
+    let websocket_msg = websocket
+        .next()
+        .await
         .context("websocket stream ended unexpectedly")?;
 
     loop {
         match websocket_msg {
             Ok(Message::Text(_)) => log::error!("unexpected message type"),
             Ok(Message::Ping(_) | Message::Pong(_)) => continue,
-            Ok(Message::Binary(blob)) => break serde_json::from_slice(blob.as_slice()).map_err(|e| e.into()),
+            Ok(Message::Binary(blob)) => {
+                break serde_json::from_slice(blob.as_slice()).map_err(|e| e.into())
+            }
             Ok(Message::Close(_)) => bail!("websocket: received close"),
-            Err(e) => bail!("websocket: failed to read message ({:?})", e)
+            Err(e) => bail!("websocket: failed to read message ({:?})", e),
         }
     }
 }
 
 #[cfg(feature = "server")]
-async fn create_or_join_room(websocket: &mut WebSocket, id: Uuid, server_state: &ServerState) -> anyhow::Result<RoomHandle> {
+async fn create_or_join_room(
+    websocket: &mut WebSocket,
+    id: Uuid,
+    server_state: &ServerState,
+) -> anyhow::Result<RoomHandle> {
     let message = read_peer_msg(websocket).await?;
 
     match message {
@@ -147,7 +150,12 @@ async fn create_or_join_room(websocket: &mut WebSocket, id: Uuid, server_state: 
             Ok(handle)
         }
         _ => {
-            websocket.send(ServerMessage::Error("Protocol error, join or create a room first".to_string()).into()).await?;
+            websocket
+                .send(
+                    ServerMessage::Error("Protocol error, join or create a room first".to_string())
+                        .into(),
+                )
+                .await?;
             bail!("(peer {}) ignored protocol", id);
         }
     }
