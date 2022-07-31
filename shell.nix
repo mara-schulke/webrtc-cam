@@ -15,7 +15,11 @@ stdenv.mkDerivation {
     gst_all_1.gst-plugins-good 
     gst_all_1.gst-plugins-bad 
     gst_all_1.gst-plugins-ugly 
+    clang libftdi1
+    opencv
   ];
 
-  shellHook = with pkgs; '' '';
+  shellHook = with pkgs; ''
+    export LIBCLANG_PATH="${llvmPackages.libclang.lib}/lib";
+  '';
 }
