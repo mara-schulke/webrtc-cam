@@ -23,13 +23,14 @@
     <body>
     <div id="app"></div></br>
     <div class="room">
-        <video id="stream" autoplay playsinline>Your browser does not support video</video>
+        <video id="video" autoplay controls playsinline>Your browser does not support video</video>
     </div>
     <pre id="log"></pre>
         <script src="https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js"></script>
         <script type="module">
             const device = '0000000000000000000000000000000000000000000000000000000000000000';
-            const websocket = new WebSocket(`ws://${window.location.hostname || 'localhost'}/${device}/stream?peer=client`);
+            const host = window.location.hostname === 'localhost' ? 'localhost' : `${window.location.hostname}:9000`;
+            const websocket = new WebSocket(`ws://${host}/${device}/stream?peer=client`);
 
             const log = document.getElementById("log");
             const app = document.getElementById("app");
@@ -46,7 +47,7 @@
 
                 stream: {
                     preview: null,
-                    video: document.getElementById("stream"),
+                    video: document.getElementById("video"),
                     localMedia: null,
                     peerConnection: null,
                 },
@@ -91,19 +92,32 @@
             const startCall = state => {
                 console.log('Creating RTCPeerConnection');
 
-                /*
-                 state.stream.localMedia = getLocalMedia(state).then(stream => {
-                    console.log('Adding local stream to call', stream, state.stream.peerConnection);
-                    //stream.getTracks().forEach(track => state.stream.peerConnection.addTrack(track, stream));
-                    return stream;
-                }).catch(e => state.error = e);
-                */
-
                 state.stream.peerConnection = new RTCPeerConnection({
                     iceServers: [
                         {urls: "stun:stun.l.google.com:19302"},
+                        {
+                            urls: "turn:openrelay.metered.ca:80",
+                            username: "openrelayproject",
+                            credential: "openrelayproject",
+                        },
+                        {
+                            urls: "turn:openrelay.metered.ca:443",
+                            username: "openrelayproject",
+                            credential: "openrelayproject",
+                        },
+                        {
+                            urls: "turn:openrelay.metered.ca:443?transport=tcp",
+                            username: "openrelayproject",
+                            credential: "openrelayproject",
+                        },
                     ],
                 });
+
+                state.stream.localMedia = getLocalMedia().then(stream => {
+                    console.log('Adding local stream to call', stream, state.stream.peerConnection);
+                    stream.getTracks().forEach(track => state.stream.peerConnection.addTrack(track, stream));
+                    return stream;
+                }).catch(e => state.error = e);
 
                 state.stream.peerConnection.ondatachannel = console.warn;
                 state.stream.peerConnection.oniceconnectionstatechange = ev => console.warn("ice connection state change", ev.currentTarget.iceConnectionState);
@@ -114,11 +128,13 @@
                 state.stream.peerConnection.ontrack = ev => {
                     console.log("incoming stream", ev);
                     console.log(ev.streams[0].getTracks());
+                    
+                    const video = state.stream.video;
 
-                    if (state.stream.video.srcObject !== ev.streams[0]) {
+                    if (video.srcObject !== ev.streams[0]) {
                         console.log("storing incoming stream", ev);
-                        state.stream.video.srcObject = ev.streams[0]
-                        console.log(state.stream.video)
+                        video.srcObject = ev.streams[0]
+                        console.log(video)
                     }
                 };
 
@@ -160,6 +176,10 @@
             }
 
             const onSignal = signal => {
+                if (signal.event == "start" && state.stream.peerConnection.connectionState != "new") {
+                    window.location.reload()
+                }
+
                 if (signal.candidate && signal.sdpMlineIndex != null) {
                     console.log(signal);
                     const candidate = new RTCIceCandidate({
@@ -192,18 +212,14 @@
                 }
             }
 
-            /*
-            const getLocalMedia = state => {
-                return navigator.mediaDevices.getUserMedia({
-                    audio: false,
-                    video: { width: { ideal: 1920 }, height: { ideal: 1080 }, advanced: [{ aspectRatio: 16/9 }] }
-                }).then(stream => {
-                    console.log('Previewing local stream');
-                    state.stream.preview.srcObject = stream;
-                    return stream;
-                });
-            };
-             */
+            const getLocalMedia = () => {
+                try {
+                    return navigator.mediaDevices.getUserMedia({ audio: true });
+                } catch (e) {
+                    console.error("unable to stream audio to device");
+                    return Promise.reject()
+                }
+            }
         </script>
     </body>
 </html>

@@ -1,3 +1,4 @@
+use crate::signals::Event;
 use crate::signals::Signal;
 use anyhow::{anyhow, bail, Context};
 use async_std::net::TcpStream;
@@ -9,7 +10,7 @@ pub type WebSocket = WebSocketStream<TcpStream>;
 
 const SIGNALING_SERVER_ADDRESS_LOCAL: &str = "ws://localhost:80/0000000000000000000000000000000000000000000000000000000000000000/stream?peer=device";
 
-pub async fn read_from_ws(websocket: &mut WebSocket) -> anyhow::Result<Signal> {
+pub async fn read_from_ws(websocket: &mut WebSocket) -> anyhow::Result<Event> {
     use async_tungstenite::tungstenite::Message;
 
     let message = loop {
@@ -38,13 +39,25 @@ pub async fn write_to_ws(websocket: &mut WebSocket, msg: &Signal) -> anyhow::Res
 pub async fn entry() -> anyhow::Result<WebSocket> {
     log::info!("Starting signaling!");
 
-    let websocket = {
+    let mut websocket = {
         let url = Url::parse(SIGNALING_SERVER_ADDRESS_LOCAL)?;
         let addrs = url.socket_addrs(|| None).unwrap();
         let tcp = TcpStream::connect(&*addrs).await?;
         let (connection, _) = async_tungstenite::client_async(url.to_string(), tcp).await?;
         connection
     };
+
+    loop {
+        match read_from_ws(&mut websocket).await? {
+            Event::Start => {
+                log::info!("received start msg");
+                break;
+            }
+            e => {
+                log::error!("received event before start msg: {:?}", e);
+            }
+        }
+    }
 
     Ok(websocket)
 }

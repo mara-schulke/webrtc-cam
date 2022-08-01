@@ -1,18 +1,21 @@
 use crate::signaling;
 use crate::signals;
-use anyhow::bail;
+use crate::signals::Event;
+use anyhow::anyhow;
 use async_std::channel::{unbounded, Receiver, Sender};
 use async_std::stream::StreamExt;
 use async_std::sync::Arc;
 use async_std::task;
 use futures::FutureExt;
 use std::io::Cursor;
+use std::time::Duration;
 use std::time::SystemTime;
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_H264, MIME_TYPE_OPUS};
 use webrtc::api::APIBuilder;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidate;
 use webrtc::ice_transport::ice_connection_state::RTCIceConnectionState;
+use webrtc::ice_transport::ice_credential_type::RTCIceCredentialType;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::interceptor::registry::Registry;
 use webrtc::media::io::h264_reader::H264Reader;
@@ -22,15 +25,38 @@ use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::sdp_type::RTCSdpType;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
+use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
+use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
+use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
 use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
 use webrtc::track::track_local::TrackLocal;
 
 pub async fn entry(mut websocket: crate::signaling::WebSocket) -> anyhow::Result<()> {
     let config = RTCConfiguration {
-        ice_servers: vec![RTCIceServer {
-            urls: vec!["stun:stun.l.google.com:19302".to_owned()],
-            ..Default::default()
-        }],
+        ice_servers: vec![
+            RTCIceServer {
+                urls: vec!["stun:stun.l.google.com:19302".to_owned()],
+                ..Default::default()
+            },
+            RTCIceServer {
+                urls: vec!["turn:openrelay.metered.ca:80".to_owned()],
+                username: "openrelayproject".to_owned(),
+                credential: "openrelayproject".to_owned(),
+                credential_type: RTCIceCredentialType::Password,
+            },
+            RTCIceServer {
+                urls: vec!["turn:openrelay.metered.ca:443".to_owned()],
+                username: "openrelayproject".to_owned(),
+                credential: "openrelayproject".to_owned(),
+                credential_type: RTCIceCredentialType::Password,
+            },
+            RTCIceServer {
+                urls: vec!["turn:openrelay.metered.ca:443?transport=tcp".to_owned()],
+                username: "openrelayproject".to_owned(),
+                credential: "openrelayproject".to_owned(),
+                credential_type: RTCIceCredentialType::Password,
+            },
+        ],
         ..Default::default()
     };
 
@@ -46,58 +72,95 @@ pub async fn entry(mut websocket: crate::signaling::WebSocket) -> anyhow::Result
 
     let events = Events::new(api.new_peer_connection(config).await?).await;
 
-    task::spawn(video_stream(events.peer.clone()));
-    task::spawn(audio_stream(events.peer.clone()));
+    events
+        .peer
+        .add_transceiver_from_kind(
+            RTPCodecType::Audio,
+            &vec![RTCRtpTransceiverInit {
+                direction: RTCRtpTransceiverDirection::Sendrecv,
+                send_encodings: vec![],
+            }],
+        )
+        .await?;
 
-    let mut interval = async_std::stream::interval(std::time::Duration::from_millis(5000));
+    events
+        .peer
+        .add_transceiver_from_kind(
+            RTPCodecType::Video,
+            &vec![RTCRtpTransceiverInit {
+                direction: RTCRtpTransceiverDirection::Sendonly,
+                send_encodings: vec![],
+            }],
+        )
+        .await?;
 
-    loop {
+    let mut interval = async_std::stream::interval(Duration::from_millis(10000));
+
+    let res = loop {
         futures::select! {
             out = events.out.recv().fuse() => {
                 signaling::write_to_ws(&mut websocket, &out.expect("signal not there")).await?;
             }
             remote = signaling::read_from_ws(&mut websocket).fuse() => {
                 match remote {
-                    Ok(signal) => {
-                        dbg!(&signal);
-                        events.inc.send(signal).await.ok();
+                    Ok(event) => match event {
+                        Event::Start => {
+                            log::warn!("received start");
+                        }
+                        Event::Stop => {
+                            break Ok(())
+                        }
+                        Event::Signal(signal) => {
+                            dbg!(&signal);
+                            events.inc.send(signal).await.ok();
+                        }
                     },
-                    Err(e) => bail!("Websocket error {:#?}", e)
+                    Err(e) => break Err(anyhow!("Websocket error {:#?}", e))
                 }
             }
             state = events.peer_state.recv().fuse() => {
                 match state {
                     Ok(RTCPeerConnectionState::Connected) => {
                         log::info!("connected");
+                        task::spawn(video_stream(events.peer.clone()));
+                        task::spawn(audio_stream(events.peer.clone()));
                     }
                     Ok(RTCPeerConnectionState::Closed | RTCPeerConnectionState::Disconnected) => {
-                        return Ok(())
+                        break Ok(());
                     }
                     Ok(RTCPeerConnectionState::Failed) => {
-                        bail!("connection failed")
+                        break Err(anyhow!("connection failed"))
                     }
                     _ => { }
                 }
             }
-            //state = events.ice_state.recv().fuse() => {
-                //match state {
-                    //Ok(RTCIceConnectionState::) =
-
-                //}
-            //}
+            state = events.ice_state.recv().fuse() => {
+                match state {
+                    Ok(RTCIceConnectionState::Failed) => {
+                        break Err(anyhow!("connection failed"))
+                    }
+                    _ => {}
+                }
+            }
             _ = interval.next().fuse() => {
                 log::info!("connection state: {:?}", events.peer.connection_state());
                 log::info!("signaling state: {:?}", events.peer.signaling_state());
                 log::info!("ice connection state: {:?}", events.peer.ice_connection_state());
                 log::info!("ice gathering state: {:?}", events.peer.ice_gathering_state());
+
+                if let RTCPeerConnectionState::New = events.peer.connection_state() {
+                    break Err(anyhow!("retry, client did not answer in time"))
+                }
             }
         }
-    }
+    };
+
+    events.peer.close().await?;
+
+    res
 }
 
 async fn video_stream(peer: Arc<RTCPeerConnection>) -> anyhow::Result<()> {
-    use std::time::Duration;
-
     let video_track = Arc::new(TrackLocalStaticSample::new(
         RTCRtpCodecCapability {
             mime_type: MIME_TYPE_H264.to_owned(),
@@ -129,7 +192,10 @@ async fn video_stream(peer: Arc<RTCPeerConnection>) -> anyhow::Result<()> {
     while let Some(_) = frames.next().await {
         let data = match h264.next_nal() {
             Ok(nal) => nal.data.freeze(),
-            Err(e) => bail!("error while reading nal: {:?}", e),
+            Err(e) => {
+                log::error!("error while reading nal: {:?}", e);
+                break;
+            }
         };
 
         video_track
@@ -137,8 +203,7 @@ async fn video_stream(peer: Arc<RTCPeerConnection>) -> anyhow::Result<()> {
                 data,
                 duration: Duration::from_secs(1),
                 timestamp: SystemTime::now(),
-                packet_timestamp: SystemTime::now().elapsed().unwrap().as_secs() as u32,
-                prev_dropped_packets: 0,
+                ..Default::default()
             })
             .await?;
     }
@@ -149,14 +214,14 @@ async fn video_stream(peer: Arc<RTCPeerConnection>) -> anyhow::Result<()> {
 }
 
 async fn audio_stream(peer: Arc<RTCPeerConnection>) -> anyhow::Result<()> {
-    use std::time::Duration;
     use webrtc::media::io::ogg_reader::OggReader;
 
-    const OGG_PAGE_DURATION: Duration = Duration::from_millis(2000000);
+    const OGG_PAGE_DURATION: Duration = Duration::from_millis(20);
 
     let audio_track = Arc::new(TrackLocalStaticSample::new(
         RTCRtpCodecCapability {
             mime_type: MIME_TYPE_OPUS.to_owned(),
+            clock_rate: 48000,
             ..Default::default()
         },
         "audio".to_owned(),
@@ -188,9 +253,8 @@ async fn audio_stream(peer: Arc<RTCPeerConnection>) -> anyhow::Result<()> {
         let (page, header) = match ogg.parse_next_page() {
             Ok(page_and_header) => page_and_header,
             Err(err) => {
-                log::warn!("audio stream ended: {:?}", err);
-                ogg = OggReader::new(Cursor::new(file), true)?.0;
-                continue;
+                log::error!("audio stream ended: {:?}", err);
+                break;
             }
         };
 
@@ -205,8 +269,7 @@ async fn audio_stream(peer: Arc<RTCPeerConnection>) -> anyhow::Result<()> {
                 data: page.freeze(),
                 duration: Duration::from_millis(sample_count * 1000 / 48000),
                 timestamp: SystemTime::now(),
-                packet_timestamp: SystemTime::now().elapsed().unwrap().as_secs() as u32,
-                prev_dropped_packets: 0,
+                ..Default::default()
             })
             .await?;
     }
